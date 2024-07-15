@@ -1,70 +1,60 @@
 # frozen_string_literal: true
 
-require File.join(File.dirname(__FILE__), "trustin")
+require_relative "evaluators/helpers_spec"
+require_relative "evaluators/evaluator_vat"
+require_relative "evaluators/evaluator_siren"
 
 RSpec.describe TrustIn do
-  describe "#update_score()" do
-    subject! { described_class.new(evaluations).update_score() }
+  let(:siren_evaluation) { Evaluation.new(type: "SIREN", value: "123456789", score: 50, state: "unconfirmed", reason: "unable_to_reach_api") }
+  let(:vat_evaluation) { Evaluation.new(type: "VAT", value: "IE6388047V", score: 50, state: "unconfirmed", reason: "unable_to_reach_api") }
+  let(:unknown_evaluation) { Evaluation.new(type: "UNKNOWN", value: "000000000", score: 50, state: "unconfirmed", reason: "unable_to_reach_api") }
+  let(:evaluations) { [siren_evaluation, vat_evaluation] }
 
-    context "when the evaluation type is 'SIREN'" do
-      context "with a <score> greater or equal to 50 AND the <state> is unconfirmed and the <reason> is 'unable_to_reach_api'" do
-        let(:evaluations) { [Evaluation.new(type: "SIREN", value: "123456789", score: 79, state: "unconfirmed", reason: "unable_to_reach_api")] }
+  subject { described_class.new(evaluations) }
 
-        it "decreases the <score> of 5" do
-          expect(evaluations.first.score).to eq(74)
-        end
+  describe "#initialize" do
+    it "initializes with evaluations" do
+      expect(subject.instance_variable_get(:@evaluations)).to eq(evaluations)
+    end
+  end
+
+  describe "#update_scores" do
+    before do
+      allow(subject).to receive(:process_siren_evaluation)
+      allow(subject).to receive(:process_vat_evaluation)
+      subject.update_scores
+    end
+
+    it "updates scores for all evaluations" do
+      expect(subject).to have_received(:process_siren_evaluation).with(siren_evaluation)
+      expect(subject).to have_received(:process_vat_evaluation).with(vat_evaluation)
+    end
+  end
+
+  describe "#update_score" do
+    context "WHEN <evaluation> type is 'SIREN'" do
+      before do
+        siren_output = File.read('siren-example-output.json')
+        parsed_siren_output = JSON.parse(siren_output)
+        allow(EvaluatorSiren).to receive(:fetch_company_state).and_return(parsed_siren_output["records"].first["fields"]["etatadministratifetablissement"])
       end
 
-      context "when the <state> is unconfirmed and the <reason> is 'unable_to_reach_api'" do
-        let(:evaluations) { [Evaluation.new(type: "SIREN", value: "123456789", score: 37, state: "unconfirmed", reason: "unable_to_reach_api")] }
-
-        it "decreases the <score> of 1" do
-          expect(evaluations.first.score).to eq(36)
-        end
+      it "calls process_siren_evaluation" do
+        expect(subject).to receive(:process_siren_evaluation).with(siren_evaluation)
+        subject.update_score(siren_evaluation)
       end
+    end
 
-      context "when the <state> is favorable" do
-        let(:evaluations) { [Evaluation.new(type: "SIREN", value: "123456789", score: 28, state: "favorable", reason: "company_opened")] }
-
-        it "decreases the <score> of 1" do
-          expect(evaluations.first.score).to eq(27)
-        end
+    context "WHEN <evaluation> type is 'VAT'" do
+      it "calls process_vat_evaluation" do
+        expect(subject).to receive(:process_vat_evaluation).with(vat_evaluation)
+        subject.update_score(vat_evaluation)
       end
+    end
 
-      context "when the <state> is 'unconfirmed' AND the <reason> is 'ongoing_database_update'" do
-        let(:evaluations) { [Evaluation.new(type: "SIREN", value: "832940670", score: 42, state: "unconfirmed", reason: "ongoing_database_update")] }
-
-        it "assigns a <state> and a <reason> to the evaluation based on the API response and a <score> to 100" do
-          expect(evaluations.first.state).to eq("favorable")
-          expect(evaluations.first.reason).to eq("company_opened")
-          expect(evaluations.first.score).to eq(100)
-        end
-      end
-
-      context "with a <score> equal to 0" do
-        let(:evaluations) { [Evaluation.new(type: "SIREN", value: "320878499", score: 0, state: "favorable", reason: "company_opened")] }
-
-        it "assigns a <state> and a <reason> to the evaluation based on the API response and a <score> to 100" do
-          expect(evaluations.first.state).to eq("unfavorable")
-          expect(evaluations.first.reason).to eq("company_closed")
-          expect(evaluations.first.score).to eq(100)
-        end
-      end
-
-      context "with a <state> 'unfavorable'" do
-        let(:evaluations) { [Evaluation.new(type: "SIREN", value: "123456789", score: 52, state: "unfavorable", reason: "company_closed")] }
-
-        it "does not decrease its <score>" do
-          expect { subject }.not_to change { evaluations.first.score }
-        end
-      end
-
-      context "with a <state>'unfavorable' AND a <score> equal to 0" do
-        let(:evaluations) { [Evaluation.new(type: "SIREN", value: "123456789", score: 0, state: "unfavorable", reason: "company_closed")] }
-
-        it "does not call the API" do
-          expect(Net::HTTP).not_to receive(:get)
-        end
+    context "WHEN <evaluation> type is 'unknown'" do
+      it "raises an error" do
+        expect { subject.update_score(unknown_evaluation) }.to raise_error("Unknown evaluation type: UNKNOWN")
       end
     end
   end
